@@ -1,17 +1,26 @@
-# Never publish proprietary payloads or local extracts
-*.dmg
-*.asar
-windows_app/
-windows_app_*/
-extracted_app/
-codex_extract/
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
 
-# Local runtime/build artifacts
-node_modules/
-*.log
-*.tmp
+# Model checkpoints (large files)
+checkpoints/
+*.safetensors
+*.pt
+*.bin
 
-# Secrets/env
+# Env / IDE
+.venv/
+venv/
 .env
-.env.*
+.idea/
+.vscode/
 
+# OS
+.DS_Store
+Thumbs.db

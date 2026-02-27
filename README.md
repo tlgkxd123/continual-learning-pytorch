@@ -1,65 +1,91 @@
-# Codex Desktop Windows Port (Proof of Concept)
+# SOAR LLM
 
-Unofficial educational proof of concept for running the current macOS Codex desktop app payload on Windows using Electron.
+PyTorch implementation of SOAR: Test-Time Training, Continual Learning, Test-Time Compute scaling, and Agentic Tools. GPT-2 (124M) base with optional chat fine-tuning.
 
-## Scope
+## Components
 
-- Goal: launch app, connect backend, run basic agent task on Windows.
-- This is a reverse-engineering and compatibility exercise, not an official release.
-- No OpenAI proprietary app payload or binaries are redistributed here.
+- **TTT**: Plastic adapters (~0.1% params), Shampoo-lite optimizer, meta-learned prior
+- **Continual Learning**: EWC++, replay buffer, LoRA archive, expert reservation
+- **TTC**: Early exit, confidence-gated refinement, MCTS, scratchpad
+- **Agent**: Tool tokens, hierarchy, memory (working/episodic/procedural)
+- **Matryoshka** (design): Register-level dynamic precision, SM-aware scaling — see [docs/DESIGN_MATRYOSHKA_SLICING.md](docs/DESIGN_MATRYOSHKA_SLICING.md)
 
-## Status
+## Requirements
 
-- Checkpoint C0: app launches on Windows.
-- Checkpoint C1: renderer UI loads.
-- Checkpoint C2: backend connects and executes a basic task.
-- Next: C3/C4 worktree and file operation validation.
+- Python 3.10+
+- CUDA-capable GPU
+- PyTorch 2.0+, Transformers 4.36+
 
-## Tested Target
+## Setup
 
-- App version: `260205.1301`
-- Build number: `554`
-- Electron runtime: `40.0.0`
-- Backend source: `@openai/codex` vendored `codex.exe`
+```bash
+pip install -r requirements.txt
+```
 
-## What This Repo Contains
+## Usage
 
-- Sanitized setup and launch instructions.
-- Reusable scripts (launch, compare, leakage scan).
-- Technical notes and troubleshooting.
+### Python API
 
-## What This Repo Does Not Contain
+```python
+from soar_llm.model import SOARModel
+from soar_llm.config import SOARConfig
+from soar_llm.tokenizer import get_soar_tokenizer
 
-- Extracted Codex desktop application files.
-- `app.asar` contents from OpenAI distribution.
-- Vendored backend binaries.
-- Personal machine-specific logs or identity data.
+config = SOARConfig()
+tokenizer, _ = get_soar_tokenizer("gpt2")
+model = SOARModel(config)
+```
 
-## Prerequisites
+### Inference
 
-- Windows 10/11 x64
-- Node.js + npm
-- 7-Zip
-- Local Electron 40 runtime
-- A legal local copy of the Codex macOS app payload (for your own extraction)
-- `npm i -g @openai/codex`
+Text completion (auto-loads best available checkpoint):
 
-## Quick Start
+```bash
+python scripts/run_inference.py --prompt "The quick brown fox"
+```
 
-1. Prepare your extracted app payload in your own workspace.
-2. Use `scripts/launch_codex_windows.ps1` with your paths.
-3. Confirm startup and run a smoke prompt: `List files in this directory`.
+Chat mode (instruction-tuned models):
 
-See `HOWTO.md` for full steps.
+```bash
+python scripts/run_inference.py --chat --prompt "Hello"
+python scripts/run_inference.py --chat --system "You are helpful." --prompt "What is 2+2?"
+```
 
-## Legal and Safety
+Options: `--checkpoint`, `--temperature`, `--max_tokens`, `--use_ttt`, `--use_early_exit`
 
-- Unofficial and not affiliated with OpenAI.
-- Respect OpenAI terms and local law.
-- Publish only scripts/docs/patch notes, never proprietary payload files.
+## Scripts
 
-## License
+| Script | Description |
+|--------|-------------|
+| `scripts/run_inference.py` | Inference with optional TTT, early exit; chat or completion |
+| `scripts/train_chat_sft.py` | Chat SFT on Alpaca or custom JSONL |
+| `scripts/train_fineweb.py` | Pretrain on FineWeb (or WikiText fallback) |
+| `scripts/train_continual.py` | Multi-task continual fine-tuning |
+| `scripts/pretrain_meta_prior.py` | Pretrain TTT adapter meta prior |
 
-- MIT for original content in this repository (docs, scripts, and notes).
-- This license does not apply to third-party or proprietary software referenced by this workflow (including OpenAI app payloads and binaries).
+## Training Examples
 
+**Chat SFT** (recommended for instruction-following):
+
+```bash
+# Alpaca (default, ~52k samples)
+python scripts/train_chat_sft.py --steps 500 --batch 4 --seq_len 256 --out ./checkpoints/chat_sft
+
+# Custom JSONL: each line {"messages": [{"role":"user","content":"..."},{"role":"assistant","content":"..."}]}
+python scripts/train_chat_sft.py --data data.jsonl --steps 300 --out ./checkpoints/chat_sft
+```
+
+**Pretrain on web text**:
+
+```bash
+python scripts/train_fineweb.py --steps 600 --batch 16 --out ./checkpoints/fineweb
+```
+
+## Checkpoints
+
+- `checkpoints/chat_sft` — Chat-tuned (Alpaca)
+- `checkpoints/chat_sft_alpaca` — Same, explicit Alpaca run
+- `checkpoints/fineweb` — FineWeb-pretrained base
+- `checkpoints/continual` — Multi-task continual
+
+Inference auto-selects `chat_sft_alpaca` → `chat_sft` → `fineweb` when `--checkpoint` is omitted.

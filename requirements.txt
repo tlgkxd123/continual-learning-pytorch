@@ -1,0 +1,8 @@
+numpy<2
+torch>=2.0
+transformers>=4.36
+accelerate
+datasets
+sentencepiece
+faiss-cpu
+peft
