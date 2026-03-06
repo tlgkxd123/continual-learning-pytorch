@@ -1,7 +1,8 @@
-"""SOAR LLM Web UI — FastAPI chat interface."""
+"""SOAR LLM Web UI — FastAPI chat interface with continuous TTT."""
 
 import asyncio
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -19,6 +20,8 @@ app = FastAPI(title="SOAR LLM")
 model = None
 tokenizer = None
 device = torch.device("cpu")
+ttt_trainer = None
+_ttt_lock = threading.Lock()
 
 
 class Message(BaseModel):
@@ -31,16 +34,18 @@ class ChatRequest(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 256
     system: str = "You are a helpful assistant."
+    enable_ttt: bool = True
 
 
 class CompletionRequest(BaseModel):
     prompt: str
     temperature: float = 0.7
     max_tokens: int = 256
+    enable_ttt: bool = True
 
 
 def load_model():
-    global model, tokenizer
+    global model, tokenizer, ttt_trainer
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     config = SOARConfig()
@@ -72,6 +77,16 @@ def load_model():
     model = model.to(device)
     model.eval()
     print(f"Model loaded: {type(model).__name__}, vocab={len(tokenizer)}")
+
+    # Initialise the continuous TTT trainer.
+    try:
+        from soar_llm.ttt.trainer import TTTContinualTrainer
+        ttt_trainer = TTTContinualTrainer(model, config, device)
+        hooks_msg = "hooks active" if ttt_trainer.hooks_active else "hooks inactive (unsupported arch)"
+        print(f"TTT continual trainer ready — {hooks_msg}")
+    except Exception as exc:  # pragma: no cover
+        print(f"TTT trainer could not be initialised: {exc}")
+        ttt_trainer = None
 
 
 @app.on_event("startup")
@@ -117,6 +132,45 @@ def _format_chat(messages_dicts, system_msg):
     return "\n".join(parts) + "\n<|im_start|>assistant\n"
 
 
+def _do_ttt_step(prompt_text: str, response_text: str) -> None:
+    """Run one TTT gradient step on (prompt + response) context."""
+    if ttt_trainer is None:
+        return
+    full_text = prompt_text + response_text
+    enc = tokenizer(
+        full_text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=512,
+        padding=False,
+    )
+    input_ids = enc["input_ids"].to(device)
+    if input_ids.shape[1] < 2:
+        return
+
+    # Compute self-supervised confidence reward for RLVR / dynamic GRPO.
+    reward: Optional[float] = None
+    rewards_tensor = None
+    try:
+        with torch.no_grad():
+            out = model(input_ids=input_ids)
+            logits = out.logits if hasattr(out, "logits") else out["logits"]
+        reward = ttt_trainer.compute_reward(logits, input_ids)
+        # Build a synthetic group-rewards tensor for dynamic GRPO.
+        rewards_tensor = torch.tensor([reward], device=device)
+    except Exception as exc:
+        print(f"[TTT] reward computation failed: {exc}")
+
+    try:
+        ttt_trainer.train_step(
+            input_ids,
+            reward=reward,
+            rewards_tensor=rewards_tensor,
+        )
+    except Exception as exc:
+        print(f"[TTT] train_step failed: {exc}")
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
@@ -127,7 +181,17 @@ async def chat(req: ChatRequest):
     loop = asyncio.get_event_loop()
     text = await loop.run_in_executor(None, _generate, ids, req.temperature, req.max_tokens)
     text = text.split("<|im_end|>")[0].strip()
-    return {"response": text}
+
+    # Continuous TTT: train in background after returning the response.
+    if req.enable_ttt and ttt_trainer is not None:
+        async def _ttt_bg():
+            try:
+                await loop.run_in_executor(None, _do_ttt_step, prompt, text)
+            except Exception as exc:
+                print(f"[TTT] background step error: {exc}")
+        asyncio.create_task(_ttt_bg())
+
+    return {"response": text, "ttt_step": ttt_trainer.step_count if ttt_trainer else 0}
 
 
 @app.post("/api/complete")
@@ -136,12 +200,33 @@ async def complete(req: CompletionRequest):
     ids = enc["input_ids"].to(device)
     loop = asyncio.get_event_loop()
     text = await loop.run_in_executor(None, _generate, ids, req.temperature, req.max_tokens)
-    return {"response": text}
+
+    # Continuous TTT: train in background after returning the response.
+    if req.enable_ttt and ttt_trainer is not None:
+        async def _ttt_bg_complete():
+            try:
+                await loop.run_in_executor(None, _do_ttt_step, req.prompt, text)
+            except Exception as exc:
+                print(f"[TTT] background step error: {exc}")
+        asyncio.create_task(_ttt_bg_complete())
+
+    return {
+        "response": text,
+        "ttt_step": ttt_trainer.step_count if ttt_trainer else 0,
+    }
 
 
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "model_loaded": model is not None}
+
+
+@app.get("/api/ttt_status")
+async def ttt_status():
+    """Return current TTT / continual-learning statistics."""
+    if ttt_trainer is None:
+        return {"enabled": False}
+    return {"enabled": True, **ttt_trainer.stats}
 
 
 @app.get("/", response_class=HTMLResponse)

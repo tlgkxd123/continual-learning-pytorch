@@ -82,6 +82,74 @@ def test_grpo_penalty_and_reward_normalization():
     assert penalty.item() > 0
 
 
+def test_dynamic_rl():
+    import torch
+    from soar_llm.continual.dynamic_rl import DynamicRL
+
+    drl = DynamicRL()
+
+    # Confidence reward: logits with a clear winner → high confidence
+    logits = torch.zeros(1, 5, 10)
+    logits[0, :, 0] = 10.0  # token 0 always wins
+    input_ids = torch.zeros(1, 5, dtype=torch.long)
+    reward = drl.compute_confidence_reward(logits, input_ids)
+    assert 0.0 < reward <= 1.0
+
+    # Perplexity reward: when logits match labels perfectly, reward is high
+    reward_ppl = drl.compute_perplexity_reward(logits[:, :4], input_ids[:, :4])
+    assert 0.0 < reward_ppl <= 1.0
+
+    # adapt_lr: reward=0.0 → LR = base * min_scale
+    p = torch.nn.Parameter(torch.zeros(4))
+    opt = torch.optim.SGD([p], lr=1e-3)
+    lr_low = drl.adapt_lr(opt, reward=0.0, base_lr=1e-3, min_scale=0.1, max_scale=2.0)
+    assert abs(lr_low - 1e-3 * 0.1) < 1e-9
+
+    # reward=1.0 → LR = base * max_scale
+    lr_high = drl.adapt_lr(opt, reward=1.0, base_lr=1e-3, min_scale=0.1, max_scale=2.0)
+    assert abs(lr_high - 1e-3 * 2.0) < 1e-9
+
+    # reward=0.5 → LR in (min, max)
+    lr_mid = drl.adapt_lr(opt, reward=0.5, base_lr=1e-3, min_scale=0.1, max_scale=2.0)
+    assert 1e-3 * 0.1 < lr_mid < 1e-3 * 2.0
+
+
+def test_ttt_continual_trainer():
+    import torch
+    import torch.nn as nn
+    from soar_llm.config import SOARConfig
+    from soar_llm.ttt.trainer import TTTContinualTrainer
+
+    # Tiny linear model as stand-in (hooks won't attach, graceful fallback).
+    class TinyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(100, 1024)
+            self.proj = nn.Linear(1024, 100)
+
+        def forward(self, input_ids):
+            import types
+            h = self.embed(input_ids)
+            logits = self.proj(h)
+            out = types.SimpleNamespace()
+            out.logits = logits
+            return out
+
+    cfg = SOARConfig()
+    tiny = TinyModel()
+    trainer = TTTContinualTrainer(tiny, cfg, torch.device("cpu"), ttt_lr=1e-4)
+
+    input_ids = torch.randint(0, 100, (1, 8))
+    loss = trainer.train_step(input_ids, reward=0.6)
+    assert isinstance(loss, float)
+    assert trainer.step_count == 1
+
+    stats = trainer.stats
+    assert "step_count" in stats
+    assert "running_loss" in stats
+    assert "replay_tokens" in stats
+
+
 def test_tokenizer():
     from soar_llm.tokenizer import get_soar_tokenizer, SPECIAL_TOKENS
     tok, n = get_soar_tokenizer("Qwen/Qwen3.5-0.8B")

@@ -1,5 +1,6 @@
-"""Test-Time Training: plastic adapters, Shampoo-lite, meta prior."""
+"""Test-Time Training: plastic adapters, Shampoo-lite, meta prior, continual trainer."""
 
 from .adapter import PlasticAdapter, TTTRouter
-from .shampoo_lite import ShampooLite
 from .meta_prior import MAMLTrainer
+from .shampoo_lite import ShampooLite
+from .trainer import TTTContinualTrainer
