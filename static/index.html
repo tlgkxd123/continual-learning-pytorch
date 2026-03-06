@@ -294,6 +294,48 @@
     padding: 0 20px 12px;
     flex-shrink: 0;
   }
+
+  /* TTT status bar */
+  .ttt-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 20px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+
+  .ttt-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+    transition: background 0.4s;
+  }
+
+  .ttt-dot.active { background: #4ade80; }
+
+  .ttt-toggle {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 3px 10px;
+    font-size: 11px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.2s;
+    margin-left: auto;
+  }
+
+  .ttt-toggle.on {
+    border-color: #4ade80;
+    color: #4ade80;
+  }
 </style>
 </head>
 <body>
@@ -340,12 +382,28 @@
     </div>
   </div>
   <div class="footer-note">Qwen3.5-0.8B &middot; UltraChat SFT &middot; CPU inference</div>
+
+  <!-- Continuous TTT status bar -->
+  <div class="ttt-bar" id="ttt-bar">
+    <div class="ttt-dot" id="ttt-dot"></div>
+    <span id="ttt-label">Continuous Learning: <b id="ttt-state">off</b></span>
+    <span id="ttt-stats" style="display:none">
+      &nbsp;|&nbsp; steps: <b id="ttt-steps">0</b>
+      &nbsp;loss: <b id="ttt-loss">—</b>
+      &nbsp;replay: <b id="ttt-replay">0</b> tok
+      &nbsp;lr: <b id="ttt-lr">—</b>
+    </span>
+    <button class="ttt-toggle" id="ttt-btn" onclick="toggleTTT()">Enable</button>
+  </div>
 </div>
 
 <script>
 let mode = 'chat';
 let chatHistory = [];
 let generating = false;
+let tttEnabled = false;
+let tttPollTimer = null;
+const TTT_POLL_MS = 3000; // milliseconds between TTT status polls
 
 const $msgs   = document.getElementById('messages');
 const $input  = document.getElementById('input');
@@ -417,6 +475,56 @@ $input.addEventListener('keydown', function(e) {
   }
 });
 
+// ---- TTT helpers ------------------------------------------------------------
+
+function toggleTTT() {
+  tttEnabled = !tttEnabled;
+  const btn = document.getElementById('ttt-btn');
+  const dot = document.getElementById('ttt-dot');
+  const stateEl = document.getElementById('ttt-state');
+  const statsEl = document.getElementById('ttt-stats');
+  btn.textContent = tttEnabled ? 'Disable' : 'Enable';
+  btn.classList.toggle('on', tttEnabled);
+  stateEl.textContent = tttEnabled ? 'on' : 'off';
+  dot.classList.toggle('active', tttEnabled);
+  statsEl.style.display = tttEnabled ? '' : 'none';
+  if (tttEnabled) {
+    startTTTPoll();
+  } else {
+    stopTTTPoll();
+  }
+}
+
+async function fetchTTTStatus() {
+  try {
+    const res = await fetch('/api/ttt_status');
+    if (!res.ok) return;
+    const d = await res.json();
+    if (!d.enabled) return;
+    document.getElementById('ttt-steps').textContent = d.step_count ?? 0;
+    document.getElementById('ttt-loss').textContent =
+      d.running_loss != null ? d.running_loss.toFixed(4) : '—';
+    document.getElementById('ttt-replay').textContent = d.replay_tokens ?? 0;
+    document.getElementById('ttt-lr').textContent =
+      d.ttt_lr != null ? d.ttt_lr.toExponential(1) : '—';
+    // Flash the dot on each poll to show activity.
+    const dot = document.getElementById('ttt-dot');
+    dot.classList.remove('active');
+    setTimeout(() => dot.classList.add('active'), 80);
+  } catch (_) { /* ignore */ }
+}
+
+function startTTTPoll() {
+  if (tttPollTimer) return;
+  tttPollTimer = setInterval(fetchTTTStatus, TTT_POLL_MS);
+}
+
+function stopTTTPoll() {
+  if (tttPollTimer) { clearInterval(tttPollTimer); tttPollTimer = null; }
+}
+
+// ---- Main send --------------------------------------------------------------
+
 async function send() {
   const text = $input.value.trim();
   if (!text || generating) return;
@@ -443,7 +551,8 @@ async function send() {
           messages: chatHistory,
           temperature: temp,
           max_tokens: maxTok,
-          system: system
+          system: system,
+          enable_ttt: tttEnabled
         })
       });
       const data = await res.json();
@@ -451,6 +560,8 @@ async function send() {
       const reply = data.response || '(empty response)';
       addMessage('assistant', reply);
       chatHistory.push({ role: 'assistant', content: reply });
+      // Immediately refresh TTT status after the step.
+      if (tttEnabled) fetchTTTStatus();
     } catch (e) {
       removeTyping();
       addMessage('assistant', 'Error: ' + e.message);
@@ -468,12 +579,14 @@ async function send() {
         body: JSON.stringify({
           prompt: text,
           temperature: temp,
-          max_tokens: maxTok
+          max_tokens: maxTok,
+          enable_ttt: tttEnabled
         })
       });
       const data = await res.json();
       removeTyping();
       addMessage('assistant', data.response || '(empty response)');
+      if (tttEnabled) fetchTTTStatus();
     } catch (e) {
       removeTyping();
       addMessage('assistant', 'Error: ' + e.message);

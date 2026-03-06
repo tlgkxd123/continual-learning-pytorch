@@ -1,5 +1,6 @@
-"""Continual Learning: EWC++, RLVR, GRPO, expert reserve, replay, LoRA archive."""
+"""Continual Learning: EWC++, RLVR, GRPO, dynamic RL, expert reserve, replay, LoRA archive."""
 
+from .dynamic_rl import DynamicRL
 from .ewc_plus import EWCPlus
 from .grpo import GRPO
 from .expert_reserve import ExpertReserver

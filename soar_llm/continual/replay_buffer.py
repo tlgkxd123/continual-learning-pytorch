@@ -3,7 +3,7 @@
 import random
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
 
 import torch
 
@@ -50,3 +50,8 @@ class ReplayBuffer:
         masks = [s.attention_mask for s in chosen if s.attention_mask is not None]
         attention_mask = torch.cat(masks, dim=0).to(device) if masks else None
         return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    @property
+    def total_tokens(self) -> int:
+        """Total number of tokens currently stored in the buffer."""
+        return self._total_tokens
