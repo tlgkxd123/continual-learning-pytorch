@@ -48,6 +48,38 @@ def test_tool_parse():
     assert calls[0][1]["query"] == "weather"
 
 
+def test_rlvr_penalty():
+    import torch
+    from soar_llm.continual.rlvr import RLVR
+
+    model = torch.nn.Linear(4, 2, bias=False)
+    rlvr = RLVR(lambda_=10.0)
+    rlvr.snapshot_reference(model)
+    with torch.no_grad():
+        model.weight.add_(0.1)
+    p0 = rlvr.penalty(model, reward=0.0)
+    p1 = rlvr.penalty(model, reward=1.0)
+    assert p0.item() > 0
+    assert p1.item() == 0
+
+
+def test_grpo_penalty_and_reward_normalization():
+    import torch
+    from soar_llm.continual.grpo import GRPO
+
+    model = torch.nn.Linear(4, 2, bias=False)
+    grpo = GRPO(lambda_=10.0, group_size=2)
+    grpo.snapshot_reference(model)
+    with torch.no_grad():
+        model.weight.add_(0.1)
+    rewards = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    normalized = grpo.normalize_rewards(rewards)
+    penalty = grpo.penalty(model, rewards=rewards)
+    assert normalized.shape == rewards.shape
+    assert torch.isfinite(normalized).all()
+    assert penalty.item() > 0
+
+
 def test_tokenizer():
     from soar_llm.tokenizer import get_soar_tokenizer, SPECIAL_TOKENS
     tok, n = get_soar_tokenizer("gpt2")

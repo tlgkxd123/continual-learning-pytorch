@@ -5,7 +5,7 @@ PyTorch implementation of SOAR: Test-Time Training, Continual Learning, Test-Tim
 ## Components
 
 - **TTT**: Plastic adapters (~0.1% params), Shampoo-lite optimizer, meta-learned prior
-- **Continual Learning**: EWC++, replay buffer, LoRA archive, expert reservation
+- **Continual Learning**: EWC++, RLVR, GRPO, replay buffer, LoRA archive, expert reservation
 - **TTC**: Early exit, confidence-gated refinement, MCTS, scratchpad
 - **Agent**: Tool tokens, hierarchy, memory (working/episodic/procedural)
 - **Matryoshka** (design): Register-level dynamic precision, SM-aware scaling — see [docs/DESIGN_MATRYOSHKA_SLICING.md](docs/DESIGN_MATRYOSHKA_SLICING.md)
