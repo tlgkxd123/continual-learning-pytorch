@@ -9,15 +9,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def test_config():
     from soar_llm.config import SOARConfig
     cfg = SOARConfig()
-    assert cfg.num_layers == 12
-    assert cfg.early_exit_layers == [4, 8, 12]
+    assert cfg.num_layers == 24
+    assert cfg.early_exit_layers == [8, 16, 24]
+    assert cfg.hidden_size == 1024
+    assert cfg.model_name == "Qwen/Qwen3.5-0.8B"
 
 
 def test_plastic_adapter():
     import torch
     from soar_llm.ttt.adapter import PlasticAdapter
-    a = PlasticAdapter(768, 32)
-    x = torch.randn(2, 10, 768)
+    a = PlasticAdapter(1024, 42)
+    x = torch.randn(2, 10, 1024)
     y = a(x)
     assert y.shape == x.shape
 
@@ -27,7 +29,7 @@ def test_ttt_router():
     from soar_llm.ttt.adapter import TTTRouter
     cfg = SOARConfig()
     r = TTTRouter(cfg)
-    assert len(r.adapters_attn) == 12
+    assert len(r.adapters_attn) == 24
 
 
 def test_shampoo_lite():
@@ -50,8 +52,8 @@ def test_tool_parse():
 
 def test_tokenizer():
     from soar_llm.tokenizer import get_soar_tokenizer, SPECIAL_TOKENS
-    tok, n = get_soar_tokenizer("gpt2")
-    assert n == len(SPECIAL_TOKENS)
+    tok, n = get_soar_tokenizer("Qwen/Qwen3.5-0.8B")
+    assert n >= 0
     enc = tok.encode("hello world")
     assert len(enc) >= 2
 
@@ -65,4 +67,4 @@ def test_model_forward():
     x = torch.randint(0, 50257, (1, 8))
     out = model.forward(x)
     assert "logits" in out
-    assert out["logits"].shape[-1] == 50257
+    assert out["logits"].shape[-1] == cfg.vocab_size

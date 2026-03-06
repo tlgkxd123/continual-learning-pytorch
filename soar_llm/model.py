@@ -4,9 +4,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from transformers import GPT2LMHeadModel, GPT2Config
+from transformers import AutoModelForCausalLM
 
 from .config import SOARConfig
+
+
+def _get_lm_head(base_model):
+    """Return the language-model head regardless of architecture."""
+    if hasattr(base_model, "lm_head"):
+        return base_model.lm_head
+    raise AttributeError("Cannot find lm_head on base model")
 
 
 class SOARModel(nn.Module):
@@ -15,7 +22,11 @@ class SOARModel(nn.Module):
     def __init__(self, config: Optional[SOARConfig] = None):
         super().__init__()
         self.config = config or SOARConfig()
-        self._base = GPT2LMHeadModel.from_pretrained(self.config.model_name)
+        self._base = AutoModelForCausalLM.from_pretrained(
+            self.config.model_name,
+            trust_remote_code=True,
+            dtype=torch.float32,
+        )
         for p in self._base.parameters():
             p.requires_grad = False
 
@@ -82,13 +93,13 @@ class SOARModel(nn.Module):
 
         if use_early_exit and hidden_states:
             classifiers = self._lazy_init_early_exit()
+            lm_head = _get_lm_head(self._base)
             for layer_idx in self.config.early_exit_layers:
                 if str(layer_idx) in classifiers and layer_idx < len(hidden_states):
                     hs = hidden_states[layer_idx]
                     exit_prob = classifiers[str(layer_idx)](hs)
                     if exit_prob.mean() > self.config.early_exit_threshold:
-                        # Use this layer's hidden for logits
-                        logits = self._base.lm_head(hidden_states[layer_idx])
+                        logits = lm_head(hidden_states[layer_idx])
                         break
 
         loss = None

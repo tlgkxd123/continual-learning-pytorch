@@ -49,21 +49,45 @@ class TTTRouter(nn.Module):
             return self.adapters_ffn[layer_idx](x)
         return x
 
+    def _get_layers_and_attn_names(self, base_model):
+        """Detect layer list and attention module name for different architectures."""
+        if hasattr(base_model, "transformer") and hasattr(base_model.transformer, "h"):
+            blocks = base_model.transformer.h
+            return blocks, "gpt2"
+        if hasattr(base_model, "model") and hasattr(base_model.model, "layers"):
+            blocks = base_model.model.layers
+            return blocks, "llama_style"
+        raise ValueError("Unsupported model architecture for TTT hooks")
+
     def register_hooks(self, base_model):
-        """Register forward hooks on base GPT-2 to inject adapter outputs."""
+        """Register forward hooks on base model to inject adapter outputs."""
+        blocks, arch = self._get_layers_and_attn_names(base_model)
         handles = []
-        for i, block in enumerate(base_model.transformer.h):
+
+        for i, block in enumerate(blocks):
+            if i >= len(self.adapters_attn):
+                break
             attn_ad = self.adapters_attn[i]
             ffn_ad = self.adapters_ffn[i]
 
-            def attn_hook(m, inputs, output, ad=attn_ad):
-                h = output[0]
-                rest = output[1:]
-                return (ad(h),) + rest
+            if arch == "gpt2":
+                attn_mod = block.attn
+                ffn_mod = block.mlp
+            else:
+                attn_mod = getattr(block, "self_attn", None) or getattr(block, "linear_attn", None)
+                ffn_mod = block.mlp
+
+            if attn_mod is not None:
+                def attn_hook(m, inputs, output, ad=attn_ad):
+                    if isinstance(output, tuple):
+                        h = output[0]
+                        rest = output[1:]
+                        return (ad(h),) + rest
+                    return ad(output)
+                handles.append(attn_mod.register_forward_hook(attn_hook))
 
             def ffn_hook(m, inputs, output, ad=ffn_ad):
                 return ad(output)
+            handles.append(ffn_mod.register_forward_hook(ffn_hook))
 
-            handles.append(block.attn.register_forward_hook(attn_hook))
-            handles.append(block.mlp.register_forward_hook(ffn_hook))
         return handles

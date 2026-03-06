@@ -6,19 +6,19 @@ from typing import List
 
 @dataclass
 class SOARConfig:
-    """Configuration for SOAR LLM (~125M params, GPT-2 base)."""
+    """Configuration for SOAR LLM (Qwen3.5-0.8B base)."""
 
-    # Base model (GPT-2 124M)
-    model_name: str = "gpt2"
-    hidden_size: int = 768
-    num_layers: int = 12
-    num_heads: int = 12
-    intermediate_size: int = 3072
-    vocab_size: int = 50257
+    # Base model
+    model_name: str = "Qwen/Qwen3.5-0.8B"
+    hidden_size: int = 1024
+    num_layers: int = 24
+    num_heads: int = 8
+    intermediate_size: int = 3584
+    vocab_size: int = 248320
 
     # TTT (Test-Time Training)
     ttt_adapter_ratio: float = 0.001
-    ttt_bottleneck_dim: int = 32
+    ttt_bottleneck_dim: int = 42
     ttt_enabled: bool = True
 
     # Shampoo-lite
@@ -26,8 +26,8 @@ class SOARConfig:
     shampoo_momentum: float = 0.9
     shampoo_eps: float = 1e-6
 
-    # Early exit (GPT-2 has 12 layers; use 4, 8, 12)
-    early_exit_layers: List[int] = field(default_factory=lambda: [4, 8, 12])
+    # Early exit (24 layers; use 8, 16, 24)
+    early_exit_layers: List[int] = field(default_factory=lambda: [8, 16, 24])
     early_exit_threshold: float = 0.7
 
     # Continual Learning

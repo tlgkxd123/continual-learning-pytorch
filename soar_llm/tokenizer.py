@@ -14,23 +14,35 @@ SPECIAL_TOKENS: List[str] = [
     "<TOOL_RESULT>",
 ]
 
-# ChatML-style (ChatGPT-like) tokens
 CHAT_SPECIAL_TOKENS: List[str] = ["<|im_start|>", "<|im_end|>"]
 CHAT_ROLES: List[str] = ["system", "user", "assistant"]
 
 
-def get_soar_tokenizer(base_name: str = "gpt2", add_chat_tokens: bool = True):
+def get_soar_tokenizer(base_name: str = "Qwen/Qwen3.5-0.8B", add_chat_tokens: bool = True):
     """Load base tokenizer and add SOAR special tokens."""
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(base_name)
+    tokenizer = AutoTokenizer.from_pretrained(base_name, trust_remote_code=True)
     to_add = list(SPECIAL_TOKENS)
-    if add_chat_tokens:
+    if add_chat_tokens and not _has_chatml_tokens(tokenizer):
         to_add.extend(CHAT_SPECIAL_TOKENS)
-    num_added = tokenizer.add_special_tokens(
-        {"additional_special_tokens": to_add}
-    )
+    existing = set(tokenizer.get_vocab().keys())
+    new_tokens = [t for t in to_add if t not in existing]
+    num_added = 0
+    if new_tokens:
+        num_added = tokenizer.add_special_tokens(
+            {"additional_special_tokens": new_tokens}
+        )
     return tokenizer, num_added
+
+
+def _has_chatml_tokens(tokenizer) -> bool:
+    """Check if tokenizer already has ChatML tokens (e.g. Qwen models)."""
+    try:
+        vocab = tokenizer.get_vocab()
+        return "<|im_start|>" in vocab and "<|im_end|>" in vocab
+    except Exception:
+        return False
 
 
 def format_chat(
@@ -38,7 +50,14 @@ def format_chat(
     tokenizer,
     max_length: Optional[int] = None,
 ) -> str:
-    """Format messages into ChatML string. Each msg: {role, content}."""
+    """Format messages into chat string using the tokenizer's template if available."""
+    if hasattr(tokenizer, "chat_template") and tokenizer.chat_template:
+        try:
+            return tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        except Exception:
+            pass
     parts = []
     for m in messages:
         role = m.get("role", "user")
