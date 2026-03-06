@@ -41,8 +41,10 @@ class GRPO:
     def penalty(self, model: nn.Module, rewards: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Return GRPO penalty weighted by group-relative reward signal."""
         first_param = next(model.parameters(), None)
-        if first_param is None or not self.reference_params:
-            return torch.tensor(0.0, device=first_param.device if first_param is not None else None)
+        if first_param is None:
+            return torch.tensor(0.0)
+        if not self.reference_params:
+            return torch.tensor(0.0, device=first_param.device)
 
         loss = torch.tensor(0.0, device=first_param.device)
         for n, p in model.named_parameters():

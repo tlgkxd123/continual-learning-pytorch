@@ -25,7 +25,9 @@ def main():
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--regularizer", choices=["ewc", "rlvr", "grpo"], default="ewc")
-    parser.add_argument("--ewc_lambda", type=float, default=1000.0)
+    parser.add_argument(
+        "--regularizer_lambda", "--ewc_lambda", dest="regularizer_lambda", type=float, default=1000.0
+    )
     parser.add_argument("--out", default="./checkpoints/continual")
     args = parser.parse_args()
 
@@ -36,11 +38,11 @@ def main():
     model = model.to(device)
     config = SOARConfig()
     if args.regularizer == "ewc":
-        regularizer = EWCPlus(lambda_=args.ewc_lambda)
+        regularizer = EWCPlus(lambda_=args.regularizer_lambda)
     elif args.regularizer == "rlvr":
-        regularizer = RLVR(lambda_=args.ewc_lambda)
+        regularizer = RLVR(lambda_=args.regularizer_lambda)
     else:
-        regularizer = GRPO(lambda_=args.ewc_lambda)
+        regularizer = GRPO(lambda_=args.regularizer_lambda)
     replay = ReplayBuffer(max_tokens=100_000, sample_ratio=0.05)
     archive = LoRAArchive(f"{args.out}/lora")
 
