@@ -151,11 +151,20 @@ def test_ttt_continual_trainer():
 
 
 def test_tokenizer():
-    from soar_llm.tokenizer import get_soar_tokenizer, SPECIAL_TOKENS
+    from soar_llm.tokenizer import get_soar_tokenizer
     tok, n = get_soar_tokenizer("Qwen/Qwen3.5-0.8B")
     assert n >= 0
     enc = tok.encode("hello world")
     assert len(enc) >= 2
+
+
+def test_package_top_level_exports():
+    import soar_llm
+
+    assert hasattr(soar_llm, "SOARConfig")
+    assert hasattr(soar_llm, "SOARModel")
+    assert hasattr(soar_llm, "get_soar_tokenizer")
+    assert hasattr(soar_llm, "SPECIAL_TOKENS")
 
 
 def test_model_forward():
