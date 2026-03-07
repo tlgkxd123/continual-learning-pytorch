@@ -31,6 +31,8 @@ class ReplayBuffer:
     def _priority(loss: float, reward: Optional[float]) -> float:
         if reward is None:
             return float(loss)
+        # Replay accepts reward inputs from external callers; normalize to
+        # DynamicRL's expected [0, 1] range before combining with loss.
         reward = max(0.0, min(1.0, float(reward)))
         return float(loss) * (1.0 - reward)
 

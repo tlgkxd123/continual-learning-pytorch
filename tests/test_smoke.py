@@ -127,6 +127,13 @@ def test_replay_buffer_dynamic_reward_priority():
     assert 1 not in kept_first_tokens
     assert 3 in kept_first_tokens
 
+    # Priority combines loss and reward multiplicatively.
+    rb2 = ReplayBuffer(max_tokens=2, sample_ratio=1.0)
+    rb2.add(torch.tensor([[7, 8]]), loss=2.0, reward=1.0)
+    rb2.add(torch.tensor([[9, 10]]), loss=0.9, reward=0.0)
+    kept_first = int(rb2._samples[0].input_ids[0, 0].item())
+    assert kept_first == 9
+
 
 def test_ttt_continual_trainer():
     import torch
