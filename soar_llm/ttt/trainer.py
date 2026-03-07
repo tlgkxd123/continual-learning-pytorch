@@ -93,14 +93,20 @@ class TTTContinualTrainer:
 
     def _lm_loss(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Causal LM next-token-prediction loss."""
+        loss, _ = self._lm_loss_and_logits(input_ids)
+        return loss
+
+    def _lm_loss_and_logits(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Causal LM next-token-prediction loss + full logits."""
         out = self.base_model(input_ids=input_ids)
         logits = out.logits if hasattr(out, "logits") else out["logits"]
         shift_logits = logits[:, :-1].contiguous()
         shift_labels = input_ids[:, 1:].contiguous()
-        return F.cross_entropy(
+        loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
         )
+        return loss, logits
 
     # ------------------------------------------------------------------ public
 
@@ -129,7 +135,15 @@ class TTTContinualTrainer:
 
             with torch.enable_grad():
                 # 1. Self-supervised LM loss on current context.
-                lm = self._lm_loss(input_ids)
+                lm, logits = self._lm_loss_and_logits(input_ids)
+
+                # Dynamic RL reward fallback when caller does not provide one.
+                if reward is None:
+                    reward = self.compute_reward(logits.detach(), input_ids)
+                # If the caller doesn't provide group rewards, derive a
+                # single-item tensor from scalar reward for GRPO weighting.
+                if rewards_tensor is None and reward is not None:
+                    rewards_tensor = torch.tensor([float(reward)], device=self.device)
 
                 # 2. RLVR — keep adapter close to reward-verified reference.
                 rlvr_pen = self.rlvr.penalty(self.ttt_router, reward=reward)
@@ -170,7 +184,7 @@ class TTTContinualTrainer:
                 self.dynamic_rl.adapt_lr(self.optimizer, reward, self.ttt_lr)
 
             # Store context in replay buffer for future steps.
-            self.replay_buffer.add(input_ids.detach().cpu(), lm.item())
+            self.replay_buffer.add(input_ids.detach().cpu(), lm.item(), reward=reward)
 
             # Update running stats.
             self.step_count += 1

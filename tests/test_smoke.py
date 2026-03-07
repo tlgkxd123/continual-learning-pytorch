@@ -114,6 +114,27 @@ def test_dynamic_rl():
     assert 1e-3 * 0.1 < lr_mid < 1e-3 * 2.0
 
 
+def test_replay_buffer_dynamic_reward_priority():
+    import torch
+    from soar_llm.continual.replay_buffer import ReplayBuffer
+
+    rb = ReplayBuffer(max_tokens=4, sample_ratio=1.0)
+    rb.add(torch.tensor([[1, 2]]), loss=1.0, reward=1.0)  # low priority
+    rb.add(torch.tensor([[3, 4]]), loss=1.0, reward=0.0)  # high priority
+    rb.add(torch.tensor([[5, 6]]), loss=1.0, reward=0.0)  # forces eviction
+
+    kept_first_tokens = [int(s.input_ids[0, 0].item()) for s in rb._samples]
+    assert 1 not in kept_first_tokens
+    assert 3 in kept_first_tokens
+
+    # Priority combines loss and reward multiplicatively.
+    rb2 = ReplayBuffer(max_tokens=2, sample_ratio=1.0)
+    rb2.add(torch.tensor([[7, 8]]), loss=2.0, reward=1.0)
+    rb2.add(torch.tensor([[9, 10]]), loss=0.9, reward=0.0)
+    kept_first = int(rb2._samples[0].input_ids[0, 0].item())
+    assert kept_first == 9
+
+
 def test_ttt_continual_trainer():
     import torch
     import torch.nn as nn
@@ -143,6 +164,14 @@ def test_ttt_continual_trainer():
     loss = trainer.train_step(input_ids, reward=0.6)
     assert isinstance(loss, float)
     assert trainer.step_count == 1
+
+    # Reward omitted: trainer computes confidence reward and applies dynamic LR.
+    loss2 = trainer.train_step(input_ids)
+    assert isinstance(loss2, float)
+    assert trainer.step_count == 2
+    current_lr = trainer.optimizer.param_groups[0]["lr"]
+    assert 1e-4 * 0.1 <= current_lr <= 1e-4 * 2.0
+    assert trainer.replay_buffer._samples[-1].reward is not None
 
     stats = trainer.stats
     assert "step_count" in stats
