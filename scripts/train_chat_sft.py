@@ -93,7 +93,7 @@ def get_dummy_chat(n: int = 50):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="gpt2")
+    parser.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--data", default=None, help="JSONL file: each line {messages:[{role,content}]}")
     parser.add_argument("--dataset", default=None, help="HuggingFace dataset: tatsu-lab/alpaca, OpenAssistant/oasst1, etc.")
     parser.add_argument("--steps", type=int, default=200)

@@ -46,7 +46,7 @@ def iter_fineweb(tokenizer, seq_len, batch_size):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="gpt2")
+    parser.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--steps", type=int, default=600, help="Max steps (train until loss < target_loss or this)")
     parser.add_argument("--target_loss", type=float, default=2.0, help="Stop when loss drops below this")
     parser.add_argument("--batch", type=int, default=16)

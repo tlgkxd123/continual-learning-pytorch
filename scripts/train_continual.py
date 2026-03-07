@@ -20,7 +20,7 @@ from soar_llm.continual.rlvr import RLVR
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="gpt2")
+    parser.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--tasks", nargs="+", default=["task1", "task2"])
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=5e-5)

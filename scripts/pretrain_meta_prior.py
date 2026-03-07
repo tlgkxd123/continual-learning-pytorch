@@ -16,7 +16,7 @@ from soar_llm.ttt.adapter import TTTRouter
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="gpt2")
+    parser.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--inner_steps", type=int, default=3)
     parser.add_argument("--lr", type=float, default=1e-3)
