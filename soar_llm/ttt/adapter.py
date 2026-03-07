@@ -19,11 +19,9 @@ class PlasticAdapter(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         in_dtype = x.dtype
         adapter_dtype = self.down.weight.dtype
-        if in_dtype != adapter_dtype:
-            x_ad = x.to(dtype=adapter_dtype)
-            y = x_ad + self.up(self.down(x_ad))
-            return y.to(dtype=in_dtype)
-        return x + self.up(self.down(x))
+        x_casted = x.to(dtype=adapter_dtype) if in_dtype != adapter_dtype else x
+        y = x_casted + self.up(self.down(x_casted))
+        return y.to(dtype=in_dtype) if adapter_dtype != in_dtype else y
 
 
 class TTTRouter(nn.Module):
