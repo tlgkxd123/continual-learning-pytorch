@@ -1,6 +1,7 @@
 """Inference with TTT, TTC (refinement, early exit), tool dispatch."""
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -88,10 +89,13 @@ def main():
     }
     if args.no_repeat_ngram > 0:
         gen_kwargs["no_repeat_ngram_size"] = args.no_repeat_ngram
-    if args.temperature > 0:
+    if math.isfinite(args.temperature) and args.temperature > 0:
+        temperature = max(0.05, min(args.temperature, 2.0))
         gen_kwargs["do_sample"] = True
-        gen_kwargs["temperature"] = args.temperature
+        gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = args.top_p
+        gen_kwargs["remove_invalid_values"] = True
+        gen_kwargs["renormalize_logits"] = True
     if args.chat:
         try:
             im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")

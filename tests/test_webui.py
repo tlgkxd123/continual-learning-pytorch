@@ -25,7 +25,21 @@ def test_build_gen_kwargs_has_chat_eos_ids(monkeypatch):
     assert kwargs["max_new_tokens"] == 2048
     assert kwargs["do_sample"] is True
     assert kwargs["temperature"] == 0.6
+    assert kwargs["remove_invalid_values"] is True
+    assert kwargs["renormalize_logits"] is True
     assert kwargs["eos_token_id"] == [2, 7]
+
+
+def test_build_gen_kwargs_sanitizes_temperature(monkeypatch):
+    monkeypatch.setattr(webui, "tokenizer", _DummyTokenizer())
+    kwargs_low = webui._build_gen_kwargs(temperature=1e-12, max_tokens=16, chat=False)
+    assert kwargs_low["temperature"] == 0.05
+
+    kwargs_high = webui._build_gen_kwargs(temperature=100.0, max_tokens=16, chat=False)
+    assert kwargs_high["temperature"] == 2.0
+
+    kwargs_nan = webui._build_gen_kwargs(temperature=float("nan"), max_tokens=16, chat=False)
+    assert "do_sample" not in kwargs_nan
 
 
 def test_device_defaults_to_cpu_without_cuda(monkeypatch):
