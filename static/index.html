@@ -231,6 +231,19 @@
 
   .setting input[type="number"] { width: 64px; }
   .setting input[type="text"] { width: 220px; }
+  .status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    border-radius: 999px;
+    padding: 4px 10px;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+  .status-chip.ok { border-color: #4ade80; color: #4ade80; }
+  .status-chip.warn { border-color: #f59e0b; color: #f59e0b; }
 
   /* Input area */
   .input-area {
@@ -286,6 +299,18 @@
   .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .send-btn svg { width: 18px; height: 18px; }
+
+  .remember-btn {
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text-muted);
+    border-radius: 10px;
+    height: 36px;
+    padding: 0 10px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .remember-btn:hover { color: var(--text); border-color: var(--text-muted); }
 
   .footer-note {
     text-align: center;
@@ -364,6 +389,8 @@
       <label>Max tokens:</label>
       <input type="number" id="max-tokens" value="128" min="1" max="1024" step="1" />
     </div>
+    <span class="status-chip" id="model-status">Loading model…</span>
+    <span class="status-chip" id="memory-status">Memory idle</span>
   </div>
 
   <div id="messages">
@@ -376,12 +403,13 @@
   <div class="input-area">
     <div class="input-wrapper">
       <textarea id="input" rows="1" placeholder="Type a message..." autofocus></textarea>
+      <button class="remember-btn" id="remember-btn" onclick="rememberInput()">Add to Weights</button>
       <button class="send-btn" id="send-btn" onclick="send()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
     </div>
   </div>
-  <div class="footer-note">Qwen3.5-0.8B &middot; UltraChat SFT &middot; CPU inference</div>
+  <div class="footer-note" id="footer-note">Qwen3.5-0.8B &middot; preparing model…</div>
 
   <!-- Continuous TTT status bar -->
   <div class="ttt-bar" id="ttt-bar">
@@ -403,6 +431,7 @@ let chatHistory = [];
 let generating = false;
 let tttEnabled = false;
 let tttPollTimer = null;
+let currentAbortController = null;
 const TTT_POLL_MS = 3000; // milliseconds between TTT status polls
 
 const $msgs   = document.getElementById('messages');
@@ -461,6 +490,13 @@ function addTyping() {
 function removeTyping() {
   const el = document.getElementById('typing-msg');
   if (el) el.remove();
+}
+
+function setMemoryStatus(text, kind = '') {
+  const el = document.getElementById('memory-status');
+  el.textContent = text;
+  el.classList.remove('ok', 'warn');
+  if (kind) el.classList.add(kind);
 }
 
 $input.addEventListener('input', function() {
@@ -523,6 +559,86 @@ function stopTTTPoll() {
   if (tttPollTimer) { clearInterval(tttPollTimer); tttPollTimer = null; }
 }
 
+async function streamToBubble(endpoint, payload, bubble) {
+  currentAbortController = new AbortController();
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: currentAbortController.signal
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+  let donePayload = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+    for (const evt of events) {
+      const line = evt.split('\n').find(l => l.startsWith('data: '));
+      if (!line) continue;
+      const data = JSON.parse(line.slice(6));
+      if (data.type === 'token') {
+        fullText += data.text || '';
+        bubble.textContent = fullText;
+        $msgs.scrollTop = $msgs.scrollHeight;
+      } else if (data.type === 'done') {
+        donePayload = data;
+      } else if (data.type === 'error') {
+        throw new Error(data.error || 'stream error');
+      }
+    }
+  }
+
+  if (!donePayload) donePayload = { response: fullText };
+  return donePayload;
+}
+
+async function rememberInput() {
+  const current = $input.value.trim();
+  const fallback = [...chatHistory].reverse().find(m => m.role === 'user')?.content || '';
+  const text = current || fallback;
+  if (!text) {
+    setMemoryStatus('Nothing to add', 'warn');
+    return;
+  }
+  setMemoryStatus('Adding to weights…');
+  try {
+    const res = await fetch('/api/ttt/remember', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, save: true })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'failed to save memory');
+    setMemoryStatus(`Added ✓ step ${data.ttt_step || 0}`, 'ok');
+    if (tttEnabled) fetchTTTStatus();
+  } catch (e) {
+    setMemoryStatus(`Failed: ${e.message}`, 'warn');
+  }
+}
+
+async function initHealth() {
+  try {
+    const res = await fetch('/api/health');
+    const data = await res.json();
+    const status = document.getElementById('model-status');
+    status.textContent = data.model_loaded ? `Model ready on ${data.device}` : 'Model loading…';
+    status.classList.toggle('ok', !!data.model_loaded);
+    document.getElementById('footer-note').textContent =
+      `Qwen3.5-0.8B · ${data.device || 'cpu'} inference · streaming on`;
+  } catch (_) {}
+}
+
 // ---- Main send --------------------------------------------------------------
 
 async function send() {
@@ -541,54 +657,39 @@ async function send() {
     chatHistory.push({ role: 'user', content: text });
     $input.value = '';
     $input.style.height = 'auto';
-    addTyping();
+    const bubble = addMessage('assistant', '');
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: chatHistory,
-          temperature: temp,
-          max_tokens: maxTok,
-          system: system,
-          enable_ttt: tttEnabled
-        })
-      });
-      const data = await res.json();
-      removeTyping();
+      const data = await streamToBubble('/api/chat/stream', {
+        messages: chatHistory,
+        temperature: temp,
+        max_tokens: maxTok,
+        system: system,
+        enable_ttt: tttEnabled
+      }, bubble);
       const reply = data.response || '(empty response)';
-      addMessage('assistant', reply);
+      bubble.textContent = reply;
       chatHistory.push({ role: 'assistant', content: reply });
-      // Immediately refresh TTT status after the step.
       if (tttEnabled) fetchTTTStatus();
     } catch (e) {
-      removeTyping();
       addMessage('assistant', 'Error: ' + e.message);
     }
   } else {
     addMessage('user', text);
     $input.value = '';
     $input.style.height = 'auto';
-    addTyping();
+    const bubble = addMessage('assistant', '');
 
     try {
-      const res = await fetch('/api/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: text,
-          temperature: temp,
-          max_tokens: maxTok,
-          enable_ttt: tttEnabled
-        })
-      });
-      const data = await res.json();
-      removeTyping();
-      addMessage('assistant', data.response || '(empty response)');
+      const data = await streamToBubble('/api/complete/stream', {
+        prompt: text,
+        temperature: temp,
+        max_tokens: maxTok,
+        enable_ttt: tttEnabled
+      }, bubble);
+      bubble.textContent = data.response || '(empty response)';
       if (tttEnabled) fetchTTTStatus();
     } catch (e) {
-      removeTyping();
       addMessage('assistant', 'Error: ' + e.message);
     }
   }
@@ -597,6 +698,8 @@ async function send() {
   $send.disabled = false;
   $input.focus();
 }
+
+initHealth();
 </script>
 </body>
 </html>
