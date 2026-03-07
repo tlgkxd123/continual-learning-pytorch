@@ -1,5 +1,3 @@
-import importlib
-
 import webui
 
 
@@ -15,15 +13,16 @@ class _DummyTokenizer:
 
 
 def test_sanitize_max_tokens_clamps_range():
+    webui.tokenizer = None
     assert webui._sanitize_max_tokens(0) == 1
     assert webui._sanitize_max_tokens(10) == 10
-    assert webui._sanitize_max_tokens(9999) == 1024
+    assert webui._sanitize_max_tokens(9999) == 4096
 
 
 def test_build_gen_kwargs_has_chat_eos_ids(monkeypatch):
     monkeypatch.setattr(webui, "tokenizer", _DummyTokenizer())
     kwargs = webui._build_gen_kwargs(temperature=0.6, max_tokens=2048, chat=True)
-    assert kwargs["max_new_tokens"] == 1024
+    assert kwargs["max_new_tokens"] == 2048
     assert kwargs["do_sample"] is True
     assert kwargs["temperature"] == 0.6
     assert kwargs["eos_token_id"] == [2, 7]
@@ -31,5 +30,4 @@ def test_build_gen_kwargs_has_chat_eos_ids(monkeypatch):
 
 def test_device_defaults_to_cpu_without_cuda(monkeypatch):
     monkeypatch.setattr("torch.cuda.is_available", lambda: False)
-    reloaded = importlib.reload(webui)
-    assert reloaded.device.type == "cpu"
+    assert webui._default_device().type == "cpu"

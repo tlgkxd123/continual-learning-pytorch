@@ -21,9 +21,17 @@ app = FastAPI(title="SOAR LLM")
 
 model = None
 tokenizer = None
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _default_device() -> torch.device:
+    """Return torch.device for CUDA when available, else CPU."""
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+device = _default_device()
 ttt_trainer = None
 _ttt_lock = threading.Lock()
+_TTT_MEMORY_DIR = Path(__file__).resolve().parent / "checkpoints" / "ttt_memory"
 
 
 class Message(BaseModel):
@@ -52,10 +60,17 @@ class RememberRequest(BaseModel):
 
 
 def _sanitize_max_tokens(max_tokens: int) -> int:
-    return max(1, min(int(max_tokens), 1024))
+    """Clamp max_tokens to a safe range based on tokenizer limits."""
+    model_limit = getattr(tokenizer, "model_max_length", None)
+    if isinstance(model_limit, int) and 1 <= model_limit <= 32768:
+        limit = model_limit
+    else:
+        limit = 4096
+    return max(1, min(int(max_tokens), limit))
 
 
 def _build_gen_kwargs(temperature: float, max_tokens: int, *, chat: bool) -> dict:
+    """Build generation kwargs with sampling, limits, and chat EOS handling."""
     gen_kwargs = {
         "max_new_tokens": _sanitize_max_tokens(max_tokens),
         "pad_token_id": tokenizer.pad_token_id,
@@ -198,9 +213,10 @@ def _do_ttt_step(prompt_text: str, response_text: str) -> None:
 
 
 def _save_ttt_state() -> str:
+    """Persist TTT adapter weights/stats under checkpoints/ttt_memory/."""
     if ttt_trainer is None:
         raise RuntimeError("TTT trainer is not enabled")
-    out_dir = Path(__file__).resolve().parent / "checkpoints" / "ttt_memory"
+    out_dir = _TTT_MEMORY_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     adapter_path = out_dir / "ttt_router.pt"
     stats_path = out_dir / "stats.json"
@@ -211,6 +227,7 @@ def _save_ttt_state() -> str:
 
 
 def _stream_chunks(input_ids: torch.Tensor, temperature: float, max_tokens: int, *, chat: bool):
+    """Yield streamed text chunks from model.generate via TextIteratorStreamer."""
     from transformers import TextIteratorStreamer
 
     streamer = TextIteratorStreamer(
@@ -223,7 +240,6 @@ def _stream_chunks(input_ids: torch.Tensor, temperature: float, max_tokens: int,
     worker = threading.Thread(
         target=model.generate,
         kwargs={"input_ids": input_ids, **gen_kwargs},
-        daemon=True,
     )
     worker.start()
 
@@ -237,7 +253,7 @@ def _stream_chunks(input_ids: torch.Tensor, temperature: float, max_tokens: int,
                 yield text_piece
             break
         yield text_piece
-    worker.join(timeout=1.0)
+    worker.join()
 
 
 @app.post("/api/chat")

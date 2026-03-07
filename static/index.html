@@ -560,6 +560,7 @@ function stopTTTPoll() {
 }
 
 async function streamToBubble(endpoint, payload, bubble) {
+  if (currentAbortController) currentAbortController.abort();
   currentAbortController = new AbortController();
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -605,7 +606,13 @@ async function streamToBubble(endpoint, payload, bubble) {
 
 async function rememberInput() {
   const current = $input.value.trim();
-  const fallback = [...chatHistory].reverse().find(m => m.role === 'user')?.content || '';
+  let fallback = '';
+  for (let i = chatHistory.length - 1; i >= 0; i -= 1) {
+    if (chatHistory[i].role === 'user') {
+      fallback = chatHistory[i].content || '';
+      break;
+    }
+  }
   const text = current || fallback;
   if (!text) {
     setMemoryStatus('Nothing to add', 'warn');
@@ -636,7 +643,9 @@ async function initHealth() {
     status.classList.toggle('ok', !!data.model_loaded);
     document.getElementById('footer-note').textContent =
       `Qwen3.5-0.8B · ${data.device || 'cpu'} inference · streaming on`;
-  } catch (_) {}
+  } catch (err) {
+    console.error('Health check failed', err);
+  }
 }
 
 // ---- Main send --------------------------------------------------------------
