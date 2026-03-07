@@ -53,6 +53,14 @@ python scripts/run_inference.py --chat --system "You are helpful." --prompt "Wha
 
 Options: `--checkpoint`, `--temperature`, `--max_tokens`, `--use_ttt`, `--use_early_exit`
 
+### Web UI
+
+```bash
+python3 webui.py
+```
+
+The UI supports streaming token output, auto-selects GPU generation when CUDA is available (CPU fallback otherwise), and includes an **Add to Weights** action that runs a TTT continual-learning step on user text and saves adapter memory to `checkpoints/ttt_memory/`.
+
 ## Scripts
 
 | Script | Description |
