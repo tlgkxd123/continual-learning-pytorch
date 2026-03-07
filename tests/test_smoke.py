@@ -24,6 +24,18 @@ def test_plastic_adapter():
     assert y.shape == x.shape
 
 
+def test_plastic_adapter_handles_dtype_mismatch():
+    import torch
+    from soar_llm.ttt.adapter import PlasticAdapter
+
+    a = PlasticAdapter(16, 4).to(dtype=torch.float64)
+    x = torch.randn(2, 3, 16, dtype=torch.float32)
+    y = a(x)
+
+    assert y.shape == x.shape
+    assert y.dtype == x.dtype
+
+
 def test_ttt_router():
     from soar_llm.config import SOARConfig
     from soar_llm.ttt.adapter import TTTRouter
