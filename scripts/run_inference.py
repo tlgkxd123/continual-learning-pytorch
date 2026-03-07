@@ -15,6 +15,9 @@ from soar_llm.config import SOARConfig
 from soar_llm.model import SOARModel
 from soar_llm.tokenizer import get_soar_tokenizer, resize_model_embeddings, format_chat
 
+_MIN_TEMPERATURE = 0.05
+_MAX_TEMPERATURE = 2.0
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -90,7 +93,7 @@ def main():
     if args.no_repeat_ngram > 0:
         gen_kwargs["no_repeat_ngram_size"] = args.no_repeat_ngram
     if math.isfinite(args.temperature) and args.temperature > 0:
-        temperature = max(0.05, min(args.temperature, 2.0))
+        temperature = max(_MIN_TEMPERATURE, min(args.temperature, _MAX_TEMPERATURE))
         gen_kwargs["do_sample"] = True
         gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = args.top_p

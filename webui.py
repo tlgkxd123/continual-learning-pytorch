@@ -33,6 +33,8 @@ device = _default_device()
 ttt_trainer = None
 _ttt_lock = threading.Lock()
 _TTT_MEMORY_DIR = Path(__file__).resolve().parent / "checkpoints" / "ttt_memory"
+_MIN_TEMPERATURE = 0.05
+_MAX_TEMPERATURE = 2.0
 
 
 class Message(BaseModel):
@@ -72,7 +74,7 @@ def _sanitize_max_tokens(max_tokens: int) -> int:
 
 def _build_gen_kwargs(temperature: float, max_tokens: int, *, chat: bool) -> dict:
     """Build generation kwargs with sampling, limits, and chat EOS handling."""
-    temp = float(temperature)
+    temp = temperature
     gen_kwargs = {
         "max_new_tokens": _sanitize_max_tokens(max_tokens),
         "pad_token_id": tokenizer.pad_token_id,
@@ -80,7 +82,7 @@ def _build_gen_kwargs(temperature: float, max_tokens: int, *, chat: bool) -> dic
         "repetition_penalty": 1.1,
     }
     if math.isfinite(temp) and temp > 0:
-        temp = max(0.05, min(temp, 2.0))
+        temp = max(_MIN_TEMPERATURE, min(temp, _MAX_TEMPERATURE))
         gen_kwargs["do_sample"] = True
         gen_kwargs["temperature"] = temp
         gen_kwargs["top_p"] = 0.9
