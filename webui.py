@@ -1,6 +1,8 @@
-"""SOAR LLM Web UI — FastAPI chat interface."""
+"""SOAR LLM Omnimodal Web UI — text + image chat powered by Qwen3.5."""
 
 import asyncio
+import base64
+import io
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -12,18 +14,22 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from soar_llm.config import SOARConfig
-
 app = FastAPI(title="SOAR LLM")
 
 model = None
-tokenizer = None
+processor = None
 device = torch.device("cpu")
+
+
+class ContentPart(BaseModel):
+    type: str  # "text" or "image"
+    text: Optional[str] = None
+    image: Optional[str] = None  # base64-encoded image data
 
 
 class Message(BaseModel):
     role: str
-    content: str
+    content: str | List[ContentPart]
 
 
 class ChatRequest(BaseModel):
@@ -40,38 +46,42 @@ class CompletionRequest(BaseModel):
 
 
 def load_model():
-    global model, tokenizer
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    global model, processor
+    from transformers import AutoProcessor, AutoModelForImageTextToText
+    from soar_llm.config import SOARConfig
 
     config = SOARConfig()
     root = Path(__file__).resolve().parent
 
     checkpoint = None
-    for ckpt in ("checkpoints/ultrachat_sft", "checkpoints/chat_sft_alpaca",
-                  "checkpoints/chat_sft", "checkpoints/fineweb"):
+    for ckpt in ("checkpoints/ultrachat_sft",):
         if (root / ckpt / "config.json").exists():
             checkpoint = str(root / ckpt)
             break
 
-    model_path = checkpoint or config.model_name
-    print(f"Loading model from: {model_path}")
+    model_path = config.model_name
+    print(f"Loading multimodal model from: {model_path}", flush=True)
 
-    model = AutoModelForCausalLM.from_pretrained(
+    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    model = AutoModelForImageTextToText.from_pretrained(
         model_path,
         trust_remote_code=True,
         dtype=torch.float32,
     )
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    except Exception:
-        tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True)
 
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if checkpoint:
+        print(f"Loading fine-tuned text weights from: {checkpoint}", flush=True)
+        from safetensors.torch import load_file
+        ckpt_path = Path(checkpoint) / "model.safetensors"
+        if ckpt_path.exists():
+            state_dict = load_file(str(ckpt_path))
+            missing, unexpected = model.load_state_dict(state_dict, strict=False)
+            print(f"  Loaded checkpoint: {len(state_dict)} tensors "
+                  f"(missing={len(missing)}, unexpected={len(unexpected)})", flush=True)
 
-    model = model.to(device)
+    model.to(device)
     model.eval()
-    print(f"Model loaded: {type(model).__name__}, vocab={len(tokenizer)}")
+    print(f"Model loaded: {type(model).__name__}", flush=True)
 
 
 @app.on_event("startup")
@@ -80,68 +90,90 @@ async def startup():
     await loop.run_in_executor(None, load_model)
 
 
-def _generate(input_ids: torch.Tensor, temperature: float, max_tokens: int) -> str:
+def _build_messages(req_messages: List[Message], system_msg: str):
+    """Convert API messages to Qwen3.5 multimodal format."""
+    from PIL import Image
+
+    messages = []
+    if system_msg:
+        messages.append({"role": "system", "content": [{"type": "text", "text": system_msg}]})
+
+    images_for_processing = []
+
+    for m in req_messages:
+        if isinstance(m.content, str):
+            messages.append({"role": m.role, "content": [{"type": "text", "text": m.content}]})
+        else:
+            parts = []
+            for p in m.content:
+                if p.type == "text" and p.text:
+                    parts.append({"type": "text", "text": p.text})
+                elif p.type == "image" and p.image:
+                    img_data = base64.b64decode(p.image)
+                    img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                    images_for_processing.append(img)
+                    parts.append({"type": "image", "image": img})
+            if parts:
+                messages.append({"role": m.role, "content": parts})
+
+    return messages, images_for_processing
+
+
+def _generate(messages, images, temperature, max_tokens):
+    """Run multimodal generation."""
+    from qwen_vl_utils import process_vision_info
+
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    vis_images, vis_videos = process_vision_info(messages)
+
+    inputs = processor(
+        text=text,
+        images=vis_images if vis_images else None,
+        videos=vis_videos if vis_videos else None,
+        return_tensors="pt",
+    ).to(device)
+
     gen_kwargs = {
         "max_new_tokens": max_tokens,
-        "pad_token_id": tokenizer.pad_token_id,
+        "pad_token_id": processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id,
         "repetition_penalty": 1.1,
     }
     if temperature > 0:
         gen_kwargs["do_sample"] = True
         gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = 0.9
+
     with torch.no_grad():
-        out = model.generate(input_ids, **gen_kwargs)
-    new_ids = out[0][input_ids.shape[1]:]
-    return tokenizer.decode(new_ids, skip_special_tokens=True)
+        out = model.generate(**inputs, **gen_kwargs)
 
-
-def _format_chat(messages_dicts, system_msg):
-    """Format using tokenizer's native chat template."""
-    chat = []
-    if system_msg:
-        chat.append({"role": "system", "content": system_msg})
-    chat.extend(messages_dicts)
-
-    if hasattr(tokenizer, "chat_template") and tokenizer.chat_template:
-        try:
-            return tokenizer.apply_chat_template(
-                chat, tokenize=False, add_generation_prompt=True
-            )
-        except Exception:
-            pass
-
-    parts = []
-    for m in chat:
-        parts.append(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>")
-    return "\n".join(parts) + "\n<|im_start|>assistant\n"
+    new_ids = out[0][inputs["input_ids"].shape[1]:]
+    return processor.decode(new_ids, skip_special_tokens=True)
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    prompt = _format_chat(messages, req.system)
-    enc = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
-    ids = enc["input_ids"].to(device)
-
+    messages, images = _build_messages(req.messages, req.system)
     loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(None, _generate, ids, req.temperature, req.max_tokens)
+    text = await loop.run_in_executor(
+        None, _generate, messages, images, req.temperature, req.max_tokens
+    )
     text = text.split("<|im_end|>")[0].strip()
     return {"response": text}
 
 
 @app.post("/api/complete")
 async def complete(req: CompletionRequest):
-    enc = tokenizer(req.prompt, return_tensors="pt", padding=True, truncation=True)
-    ids = enc["input_ids"].to(device)
+    messages = [{"role": "user", "content": [{"type": "text", "text": req.prompt}]}]
     loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(None, _generate, ids, req.temperature, req.max_tokens)
+    text = await loop.run_in_executor(
+        None, _generate, messages, [], req.temperature, req.max_tokens
+    )
     return {"response": text}
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "model_loaded": model is not None}
+    return {"status": "ok", "model_loaded": model is not None, "omnimodal": True}
 
 
 @app.get("/", response_class=HTMLResponse)
