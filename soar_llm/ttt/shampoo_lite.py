@@ -1,6 +1,6 @@
 """Shampoo-lite: lightweight second-order preconditioner for TTT."""
 
-from typing import Iterator, List
+from typing import Iterator
 
 import torch
 from torch.optim import Optimizer
@@ -30,7 +30,6 @@ class ShampooLite(Optimizer):
             lr = group["lr"]
             momentum = group["momentum"]
             eps = group["eps"]
-            update_freq = group.get("update_freq", 1)
 
             for p in group["params"]:
                 if p.grad is None:

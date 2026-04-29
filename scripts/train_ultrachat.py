@@ -7,11 +7,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from peft import LoraConfig, TaskType, get_peft_model
+from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
-from peft import LoraConfig, get_peft_model, TaskType, PeftModel
-
-from soar_llm.config import SOARConfig
 
 
 class UltraChatDataset(Dataset):
@@ -134,6 +132,15 @@ def find_lora_target_modules(model):
     return sorted(targets)[:6]
 
 
+def get_device(device_arg: str) -> torch.device:
+    """Resolve training device and fail early for GPU-only runs."""
+    if device_arg == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device_arg == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available")
+    return torch.device(device_arg)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune on UltraChat with LoRA")
     parser.add_argument("--model", default="Qwen/Qwen3.5-0.8B", help="Base model")
@@ -147,10 +154,21 @@ def main():
     parser.add_argument("--max_samples", type=int, default=5000, help="Max training samples to load")
     parser.add_argument("--out", default="./checkpoints/ultrachat_sft", help="Output directory")
     parser.add_argument("--log_every", type=int, default=5, help="Log every N steps")
+    parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
+    parser.add_argument("--bf16", action="store_true", help="Use bf16 autocast on CUDA")
+    parser.add_argument("--fp16", action="store_true", help="Use fp16 autocast on CUDA")
+    parser.add_argument("--save_adapter", action="store_true", help="Save LoRA adapter instead of merged weights")
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device(args.device)
+    if args.bf16 and args.fp16:
+        raise ValueError("--bf16 and --fp16 are mutually exclusive")
     print(f"Device: {device}", flush=True)
+    amp_dtype = None
+    if device.type == "cuda" and args.bf16:
+        amp_dtype = torch.bfloat16
+    elif device.type == "cuda" and args.fp16:
+        amp_dtype = torch.float16
 
     print(f"Loading model: {args.model}", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
@@ -211,11 +229,16 @@ def main():
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
 
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-            )
+            with torch.amp.autocast(
+                device_type=device.type,
+                dtype=amp_dtype,
+                enabled=amp_dtype is not None,
+            ):
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                )
             loss = outputs.loss / args.grad_accum
             loss.backward()
             running_loss += loss.item()
@@ -239,9 +262,13 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nMerging LoRA weights and saving to {out_dir}...", flush=True)
-    model = model.merge_and_unload()
-    model.save_pretrained(out_dir)
+    if args.save_adapter:
+        print(f"\nSaving LoRA adapter to {out_dir}...", flush=True)
+        model.save_pretrained(out_dir)
+    else:
+        print(f"\nMerging LoRA weights and saving to {out_dir}...", flush=True)
+        model = model.merge_and_unload()
+        model.save_pretrained(out_dir)
     tokenizer.save_pretrained(out_dir)
 
     print("Done! Checkpoint saved.", flush=True)

@@ -1,14 +1,10 @@
 """MAML-style meta-learned prior for TTT adapter init."""
 
-from typing import Optional
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 from .adapter import TTTRouter
-from ..config import SOARConfig
 
 
 class MAMLTrainer:

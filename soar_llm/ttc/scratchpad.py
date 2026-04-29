@@ -1,6 +1,6 @@
 """Scratchpad: hidden <think> buffer, tokens excluded from output."""
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import torch
 

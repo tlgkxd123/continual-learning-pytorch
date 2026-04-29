@@ -36,6 +36,10 @@ class SOARConfig:
     ewc_lambda: float = 1000.0
     lora_rank: int = 8
     lora_alpha: int = 16
+    ttt_replay_weight: float = 0.05
+    ttt_ewc_weight: float = 0.05
+    ttt_rlvr_weight: float = 0.1
+    ttt_grpo_weight: float = 0.1
 
     # Refinement
     max_refinement_loops: int = 8
