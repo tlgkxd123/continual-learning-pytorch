@@ -1,9 +1,7 @@
 """Expert slot reservation: soft-lock old, allocate new for novel domains."""
 
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-import torch
-import torch.nn as nn
 
 
 class ExpertReserver:

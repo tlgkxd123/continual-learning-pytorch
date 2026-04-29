@@ -7,8 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
-from torch.utils.data import DataLoader
-from transformers import GPT2LMHeadModel, get_linear_schedule_with_warmup
+from transformers import GPT2LMHeadModel
 
 from soar_llm.config import SOARConfig
 from soar_llm.continual.ewc_plus import EWCPlus

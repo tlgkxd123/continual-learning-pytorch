@@ -47,13 +47,15 @@ class TTTContinualTrainer:
         config: SOARConfig,
         device: torch.device,
         ttt_lr: float = 1e-4,
-        replay_weight: float = 0.05,
+        replay_weight: Optional[float] = None,
     ) -> None:
         self.base_model = base_model
         self.config = config
         self.device = device
         self.ttt_lr = ttt_lr
-        self.replay_weight = replay_weight
+        self.replay_weight = (
+            config.ttt_replay_weight if replay_weight is None else replay_weight
+        )
 
         # ---- TTT adapter --------------------------------------------------- #
         self.ttt_router = TTTRouter(config).to(device)
@@ -87,6 +89,7 @@ class TTTContinualTrainer:
         # ---- Internal state ------------------------------------------------ #
         self.step_count: int = 0
         self.running_loss: float = 0.0
+        self.last_reward: Optional[float] = None
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ private
@@ -168,12 +171,11 @@ class TTTContinualTrainer:
                     if r_ids.numel() > 1:
                         replay_loss = self._lm_loss(r_ids[:1])
 
-                total = (
-                    lm
-                    + rlvr_pen
-                    + grpo_pen
-                    + ewc_pen
-                    + self.replay_weight * replay_loss
+                total = lm + self._regularization_loss(
+                    rlvr_pen=rlvr_pen,
+                    grpo_pen=grpo_pen,
+                    ewc_pen=ewc_pen,
+                    replay_loss=replay_loss,
                 )
                 total.backward()
 
@@ -188,6 +190,7 @@ class TTTContinualTrainer:
 
             # Update running stats.
             self.step_count += 1
+            self.last_reward = reward
             loss_val = total.item()
             self.running_loss = 0.9 * self.running_loss + 0.1 * loss_val
 
@@ -199,11 +202,28 @@ class TTTContinualTrainer:
             self.ttt_router.eval()
             return loss_val
 
+    def _regularization_loss(
+        self,
+        rlvr_pen: torch.Tensor,
+        grpo_pen: torch.Tensor,
+        ewc_pen: torch.Tensor,
+        replay_loss: torch.Tensor,
+    ) -> torch.Tensor:
+        """Weighted continual-learning penalty for stable adapter updates."""
+        return (
+            self.config.ttt_rlvr_weight * rlvr_pen
+            + self.config.ttt_grpo_weight * grpo_pen
+            + self.config.ttt_ewc_weight * ewc_pen
+            + self.replay_weight * replay_loss
+        )
+
     def compute_reward(
         self, logits: torch.Tensor, input_ids: torch.Tensor
     ) -> float:
-        """Convenience wrapper: confidence-based self-supervised reward."""
-        return self.dynamic_rl.compute_confidence_reward(logits, input_ids)
+        """Blend confidence and perplexity rewards for self-supervised TTT."""
+        confidence = self.dynamic_rl.compute_confidence_reward(logits, input_ids)
+        perplexity = self.dynamic_rl.compute_perplexity_reward(logits, input_ids)
+        return 0.5 * confidence + 0.5 * perplexity
 
     def remove_hooks(self) -> None:
         """Remove all registered forward hooks from the base model."""
@@ -219,6 +239,7 @@ class TTTContinualTrainer:
             "step_count": self.step_count,
             "running_loss": round(self.running_loss, 4),
             "ttt_lr": round(self.ttt_lr, 6),
+            "last_reward": None if self.last_reward is None else round(self.last_reward, 4),
             "hooks_active": self.hooks_active,
             "replay_tokens": self.replay_buffer.total_tokens,
         }

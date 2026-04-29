@@ -1,9 +1,8 @@
 """Hierarchical agent: Orchestrator -> Subagents -> Tools."""
 
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict
 
-import torch
 
 
 class AgentState(Enum):
@@ -35,7 +34,7 @@ class AgentHierarchy:
             if self.state == AgentState.COMPLETE:
                 return plan
             if self.state == AgentState.EXECUTE:
-                result = self._execute_tools(plan)
+                self._execute_tools(plan)
                 self.state = AgentState.REFLECT
             elif self.state == AgentState.REFLECT:
                 self.state = AgentState.COMPLETE

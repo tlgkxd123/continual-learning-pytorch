@@ -193,6 +193,7 @@ def test_ttt_continual_trainer():
     stats = trainer.stats
     assert "step_count" in stats
     assert "running_loss" in stats
+    assert "last_reward" in stats
     assert "replay_tokens" in stats
 
 

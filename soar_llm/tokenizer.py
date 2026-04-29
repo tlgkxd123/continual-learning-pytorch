@@ -1,6 +1,6 @@
 """Extended tokenizer with SOAR special tokens and chat template."""
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 SPECIAL_TOKENS: List[str] = [
     "<think>",
