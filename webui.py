@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import sys
 import threading
 from pathlib import Path
@@ -32,6 +33,8 @@ device = _default_device()
 ttt_trainer = None
 _ttt_lock = threading.Lock()
 _TTT_MEMORY_DIR = Path(__file__).resolve().parent / "checkpoints" / "ttt_memory"
+_MIN_TEMPERATURE = 0.05
+_MAX_TEMPERATURE = 2.0
 
 
 class Message(BaseModel):
@@ -71,16 +74,20 @@ def _sanitize_max_tokens(max_tokens: int) -> int:
 
 def _build_gen_kwargs(temperature: float, max_tokens: int, *, chat: bool) -> dict:
     """Build generation kwargs with sampling, limits, and chat EOS handling."""
+    temp = temperature
     gen_kwargs = {
         "max_new_tokens": _sanitize_max_tokens(max_tokens),
         "pad_token_id": tokenizer.pad_token_id,
         "eos_token_id": tokenizer.eos_token_id,
         "repetition_penalty": 1.1,
     }
-    if temperature > 0:
+    if math.isfinite(temp) and temp > 0:
+        temp = max(_MIN_TEMPERATURE, min(temp, _MAX_TEMPERATURE))
         gen_kwargs["do_sample"] = True
-        gen_kwargs["temperature"] = float(temperature)
+        gen_kwargs["temperature"] = temp
         gen_kwargs["top_p"] = 0.9
+        gen_kwargs["remove_invalid_values"] = True
+        gen_kwargs["renormalize_logits"] = True
     if chat:
         try:
             im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
@@ -146,7 +153,7 @@ async def startup():
 
 def _generate(input_ids: torch.Tensor, temperature: float, max_tokens: int, chat: bool = False) -> str:
     gen_kwargs = _build_gen_kwargs(temperature, max_tokens, chat=chat)
-    with torch.no_grad():
+    with torch.inference_mode():
         out = model.generate(input_ids, **gen_kwargs)
     new_ids = out[0][input_ids.shape[1]:]
     return tokenizer.decode(new_ids, skip_special_tokens=True)

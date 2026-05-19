@@ -1,6 +1,7 @@
 """Inference with TTT, TTC (refinement, early exit), tool dispatch."""
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from transformers import AutoTokenizer
 from soar_llm.config import SOARConfig
 from soar_llm.model import SOARModel
 from soar_llm.tokenizer import get_soar_tokenizer, resize_model_embeddings, format_chat
+
+_MIN_TEMPERATURE = 0.05
+_MAX_TEMPERATURE = 2.0
 
 
 def main():
@@ -88,10 +92,13 @@ def main():
     }
     if args.no_repeat_ngram > 0:
         gen_kwargs["no_repeat_ngram_size"] = args.no_repeat_ngram
-    if args.temperature > 0:
+    if math.isfinite(args.temperature) and args.temperature > 0:
+        temperature = max(_MIN_TEMPERATURE, min(args.temperature, _MAX_TEMPERATURE))
         gen_kwargs["do_sample"] = True
-        gen_kwargs["temperature"] = args.temperature
+        gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = args.top_p
+        gen_kwargs["remove_invalid_values"] = True
+        gen_kwargs["renormalize_logits"] = True
     if args.chat:
         try:
             im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
