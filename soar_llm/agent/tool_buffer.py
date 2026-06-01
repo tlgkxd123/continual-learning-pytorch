@@ -1,6 +1,6 @@
 """Tool call buffer; inject <TOOL_RESULT> back into stream."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 class ToolBuffer:

@@ -1,11 +1,11 @@
 # SOAR LLM
 
-PyTorch implementation of SOAR: Test-Time Training, Continual Learning, Test-Time Compute scaling, and Agentic Tools. GPT-2 (124M) base with optional chat fine-tuning.
+PyTorch implementation of SOAR: Test-Time Training, Continual Learning, Test-Time Compute scaling, and Agentic Tools. The default base model is **Qwen3.5-0.8B** (with optional override via `--model` in training scripts).
 
 ## Components
 
 - **TTT**: Plastic adapters (~0.1% params), Shampoo-lite optimizer, meta-learned prior
-- **Continual Learning**: EWC++, replay buffer, LoRA archive, expert reservation
+- **Continual Learning**: EWC++, RLVR, GRPO, replay buffer, LoRA archive, expert reservation
 - **TTC**: Early exit, confidence-gated refinement, MCTS, scratchpad
 - **Agent**: Tool tokens, hierarchy, memory (working/episodic/procedural)
 - **Matryoshka** (design): Register-level dynamic precision, SM-aware scaling — see [docs/DESIGN_MATRYOSHKA_SLICING.md](docs/DESIGN_MATRYOSHKA_SLICING.md)
@@ -32,7 +32,7 @@ from soar_llm.config import SOARConfig
 from soar_llm.tokenizer import get_soar_tokenizer
 
 config = SOARConfig()
-tokenizer, _ = get_soar_tokenizer("gpt2")
+tokenizer, _ = get_soar_tokenizer("Qwen/Qwen3.5-0.8B")
 model = SOARModel(config)
 ```
 
@@ -53,6 +53,14 @@ python scripts/run_inference.py --chat --system "You are helpful." --prompt "Wha
 
 Options: `--checkpoint`, `--temperature`, `--max_tokens`, `--use_ttt`, `--use_early_exit`
 
+### Web UI
+
+```bash
+python3 webui.py
+```
+
+The UI supports streaming token output, auto-selects GPU generation when CUDA is available (CPU fallback otherwise), and includes an **Add to Weights** action that runs a TTT continual-learning step on user text and saves adapter memory to `checkpoints/ttt_memory/`.
+
 ## Scripts
 
 | Script | Description |
@@ -62,6 +70,8 @@ Options: `--checkpoint`, `--temperature`, `--max_tokens`, `--use_ttt`, `--use_ea
 | `scripts/train_fineweb.py` | Pretrain on FineWeb (or WikiText fallback) |
 | `scripts/train_continual.py` | Multi-task continual fine-tuning |
 | `scripts/pretrain_meta_prior.py` | Pretrain TTT adapter meta prior |
+
+All training scripts accept `--model` and default to `Qwen/Qwen3.5-0.8B`.
 
 ## Training Examples
 
@@ -89,3 +99,21 @@ python scripts/train_fineweb.py --steps 600 --batch 16 --out ./checkpoints/finew
 - `checkpoints/continual` — Multi-task continual
 
 Inference auto-selects `chat_sft_alpaca` → `chat_sft` → `fineweb` when `--checkpoint` is omitted.
+
+## Repository Layout
+
+- `soar_llm/` - core package (model, tokenizer, TTT, TTC, continual learning, agent modules)
+- `scripts/` - train/inference entrypoints
+- `tests/` - smoke tests
+- `static/` - web UI assets
+- `docs/` - design docs and implementation notes
+
+## Practical Path to Claude-Level Quality
+
+Reaching frontier quality requires a repeatable improvement loop, not a one-off tweak. A practical path in this repo is:
+
+1. **Data quality first**: prioritize high-quality supervised chat data (e.g., UltraChat + curated instruction sets).
+2. **Alignment loop**: run SFT (`train_ultrachat.py` / `train_chat_sft.py`), then continual updates (`train_continual.py`) with reward-driven regularization (`RLVR`/`GRPO`).
+3. **Evaluation gate**: track win-rate and reasoning benchmarks after each checkpoint; only promote models that improve objective scores.
+4. **Inference quality controls**: keep chat template handling, safer decoding defaults, and optional TTT enabled for adaptation.
+5. **Iterate fast**: small experiments, strict regression checks, and checkpoint comparisons beat large untracked changes.

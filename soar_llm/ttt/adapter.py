@@ -1,8 +1,5 @@
 """Plastic adapter layers for per-sample TTT updates."""
 
-import math
-from typing import Optional
-
 import torch
 import torch.nn as nn
 
@@ -20,7 +17,11 @@ class PlasticAdapter(nn.Module):
         nn.init.zeros_(self.up.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.up(self.down(x))
+        in_dtype = x.dtype
+        adapter_dtype = self.down.weight.dtype
+        x_casted = x.to(dtype=adapter_dtype) if in_dtype != adapter_dtype else x
+        y = x_casted + self.up(self.down(x_casted))
+        return y.to(dtype=in_dtype) if adapter_dtype != in_dtype else y
 
 
 class TTTRouter(nn.Module):

@@ -1,6 +1,6 @@
 """EWC++: Fisher Information masking for continual learning."""
 
-from typing import Dict, List, Optional
+from typing import Dict
 
 import torch
 import torch.nn as nn

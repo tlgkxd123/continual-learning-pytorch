@@ -1,6 +1,6 @@
 """SOAR model: HF base + TTT adapters + TTC + CL gate + agent."""
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn

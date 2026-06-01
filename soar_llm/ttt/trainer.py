@@ -1,0 +1,245 @@
+"""TTTContinualTrainer: test-time training with continual-learning regularisers.
+
+Combines:
+  * TTT adapter hooks (PlasticAdapter / TTTRouter) — only these params are
+    updated; base-model weights stay frozen.
+  * Shampoo-lite optimiser — lightweight 2nd-order preconditioner.
+  * RLVR  — reward-linked value regularisation.
+  * Dynamic GRPO — group-relative policy optimisation penalty.
+  * EWC+  — elastic weight consolidation (diagonal Fisher).
+  * Replay buffer — 5 % of each step sampled from past contexts.
+  * DynamicRL  — adaptive LR scaled by output-confidence reward.
+"""
+
+import threading
+from typing import Optional
+
+import torch
+import torch.nn.functional as F
+
+from ..config import SOARConfig
+from ..continual.dynamic_rl import DynamicRL
+from ..continual.ewc_plus import EWCPlus
+from ..continual.grpo import GRPO
+from ..continual.replay_buffer import ReplayBuffer
+from ..continual.rlvr import RLVR
+from .adapter import TTTRouter
+from .shampoo_lite import ShampooLite
+
+# How often (in steps) to re-snapshot RLVR / GRPO reference weights.
+_REFERENCE_SNAPSHOT_FREQ = 50
+
+
+class TTTContinualTrainer:
+    """On-the-fly adapter training triggered after every inference call.
+
+    Usage::
+
+        trainer = TTTContinualTrainer(model, config, device)
+        # … generate response …
+        trainer.train_step(input_ids, reward=confidence_score)
+        print(trainer.stats)
+    """
+
+    def __init__(
+        self,
+        base_model: torch.nn.Module,
+        config: SOARConfig,
+        device: torch.device,
+        ttt_lr: float = 1e-4,
+        replay_weight: Optional[float] = None,
+    ) -> None:
+        self.base_model = base_model
+        self.config = config
+        self.device = device
+        self.ttt_lr = ttt_lr
+        self.replay_weight = (
+            config.ttt_replay_weight if replay_weight is None else replay_weight
+        )
+
+        # ---- TTT adapter --------------------------------------------------- #
+        self.ttt_router = TTTRouter(config).to(device)
+        try:
+            self._hooks = self.ttt_router.register_hooks(base_model)
+        except (ValueError, AttributeError):
+            # Graceful fallback: adapters are trained but not injected.
+            self._hooks = []
+        self.hooks_active = bool(self._hooks)
+
+        # Freeze base-model params so only adapter params are trained.
+        for p in base_model.parameters():
+            p.requires_grad_(False)
+
+        # ---- Optimiser ----------------------------------------------------- #
+        self.optimizer = ShampooLite(self.ttt_router.parameters(), lr=ttt_lr)
+
+        # ---- Continual-learning regularisers ------------------------------- #
+        self.rlvr = RLVR(lambda_=config.ewc_lambda)
+        self.grpo = GRPO(lambda_=config.ewc_lambda, group_size=4)
+        self.ewc = EWCPlus(lambda_=config.ewc_lambda)
+        self.replay_buffer = ReplayBuffer(
+            config.replay_buffer_size, config.replay_sample_ratio
+        )
+        self.dynamic_rl = DynamicRL()
+
+        # Take initial reference snapshots for RLVR / GRPO.
+        self.rlvr.snapshot_reference(self.ttt_router)
+        self.grpo.snapshot_reference(self.ttt_router)
+
+        # ---- Internal state ------------------------------------------------ #
+        self.step_count: int = 0
+        self.running_loss: float = 0.0
+        self.last_reward: Optional[float] = None
+        self._lock = threading.Lock()
+
+    # ------------------------------------------------------------------ private
+
+    def _lm_loss(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Causal LM next-token-prediction loss."""
+        loss, _ = self._lm_loss_and_logits(input_ids)
+        return loss
+
+    def _lm_loss_and_logits(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Causal LM next-token-prediction loss + full logits."""
+        out = self.base_model(input_ids=input_ids)
+        logits = out.logits if hasattr(out, "logits") else out["logits"]
+        shift_logits = logits[:, :-1].contiguous()
+        shift_labels = input_ids[:, 1:].contiguous()
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+        )
+        return loss, logits
+
+    # ------------------------------------------------------------------ public
+
+    def train_step(
+        self,
+        input_ids: torch.Tensor,
+        reward: Optional[float] = None,
+        rewards_tensor: Optional[torch.Tensor] = None,
+    ) -> float:
+        """One TTT gradient step.  Thread-safe (holds an internal lock).
+
+        Args:
+            input_ids:      [1, seq_len] tokenised context (prompt + response).
+            reward:         Scalar reward ∈ [0, 1] for RLVR scaling.
+                            ``None`` disables reward-based RLVR scaling.
+            rewards_tensor: Group rewards for dynamic GRPO.
+                            ``None`` applies a uniform GRPO penalty.
+
+        Returns:
+            Scalar total-loss value.
+        """
+        with self._lock:
+            self.base_model.eval()
+            self.ttt_router.train()
+            self.optimizer.zero_grad()
+
+            with torch.enable_grad():
+                # 1. Self-supervised LM loss on current context.
+                lm, logits = self._lm_loss_and_logits(input_ids)
+
+                # Dynamic RL reward fallback when caller does not provide one.
+                if reward is None:
+                    reward = self.compute_reward(logits.detach(), input_ids)
+                # If the caller doesn't provide group rewards, derive a
+                # single-item tensor from scalar reward for GRPO weighting.
+                if rewards_tensor is None and reward is not None:
+                    rewards_tensor = torch.tensor([float(reward)], device=self.device)
+
+                # 2. RLVR — keep adapter close to reward-verified reference.
+                rlvr_pen = self.rlvr.penalty(self.ttt_router, reward=reward)
+
+                # 3. Dynamic GRPO — group-relative policy penalty.
+                grpo_pen = self.grpo.penalty(
+                    self.ttt_router, rewards=rewards_tensor
+                )
+
+                # 4. EWC+ — Fisher-weighted parameter drift penalty.
+                # EWC penalty returns 0.0 (float) before Fisher is computed;
+                # guard against that to keep the computation graph valid.
+                ewc_pen = self.ewc.penalty(self.ttt_router)
+                if not isinstance(ewc_pen, torch.Tensor):
+                    ewc_pen = torch.tensor(0.0, device=self.device)
+
+                # 5. Replay — small fraction of past contexts.
+                replay_loss = torch.tensor(0.0, device=self.device)
+                replay_batch = self.replay_buffer.sample(1, self.device)
+                if replay_batch is not None:
+                    r_ids = replay_batch["input_ids"]
+                    if r_ids.numel() > 1:
+                        replay_loss = self._lm_loss(r_ids[:1])
+
+                total = lm + self._regularization_loss(
+                    rlvr_pen=rlvr_pen,
+                    grpo_pen=grpo_pen,
+                    ewc_pen=ewc_pen,
+                    replay_loss=replay_loss,
+                )
+                total.backward()
+
+            self.optimizer.step()
+
+            # Dynamically adapt LR based on reward confidence.
+            if reward is not None:
+                self.dynamic_rl.adapt_lr(self.optimizer, reward, self.ttt_lr)
+
+            # Store context in replay buffer for future steps.
+            self.replay_buffer.add(input_ids.detach().cpu(), lm.item(), reward=reward)
+
+            # Update running stats.
+            self.step_count += 1
+            self.last_reward = reward
+            loss_val = total.item()
+            self.running_loss = 0.9 * self.running_loss + 0.1 * loss_val
+
+            # Periodically re-snapshot RLVR / GRPO reference weights.
+            if self.step_count % _REFERENCE_SNAPSHOT_FREQ == 0:
+                self.rlvr.snapshot_reference(self.ttt_router)
+                self.grpo.snapshot_reference(self.ttt_router)
+
+            self.ttt_router.eval()
+            return loss_val
+
+    def _regularization_loss(
+        self,
+        rlvr_pen: torch.Tensor,
+        grpo_pen: torch.Tensor,
+        ewc_pen: torch.Tensor,
+        replay_loss: torch.Tensor,
+    ) -> torch.Tensor:
+        """Weighted continual-learning penalty for stable adapter updates."""
+        return (
+            self.config.ttt_rlvr_weight * rlvr_pen
+            + self.config.ttt_grpo_weight * grpo_pen
+            + self.config.ttt_ewc_weight * ewc_pen
+            + self.replay_weight * replay_loss
+        )
+
+    def compute_reward(
+        self, logits: torch.Tensor, input_ids: torch.Tensor
+    ) -> float:
+        """Blend confidence and perplexity rewards for self-supervised TTT."""
+        confidence = self.dynamic_rl.compute_confidence_reward(logits, input_ids)
+        perplexity = self.dynamic_rl.compute_perplexity_reward(logits, input_ids)
+        return 0.5 * confidence + 0.5 * perplexity
+
+    def remove_hooks(self) -> None:
+        """Remove all registered forward hooks from the base model."""
+        for h in self._hooks:
+            h.remove()
+        self._hooks = []
+        self.hooks_active = False
+
+    @property
+    def stats(self) -> dict:
+        """Return a JSON-serialisable stats snapshot."""
+        return {
+            "step_count": self.step_count,
+            "running_loss": round(self.running_loss, 4),
+            "ttt_lr": round(self.ttt_lr, 6),
+            "last_reward": None if self.last_reward is None else round(self.last_reward, 4),
+            "hooks_active": self.hooks_active,
+            "replay_tokens": self.replay_buffer.total_tokens,
+        }
